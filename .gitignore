@@ -2,3 +2,5 @@ dist
 node_modules
 !.prettierignore
 .idea
+github-issues-authentication-fix.md
+.claude/settings.local.json
