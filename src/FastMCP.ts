@@ -30,7 +30,7 @@ import { EventEmitter } from "events";
 import { readFile } from "fs/promises";
 import Fuse from "fuse.js";
 import http from "http";
-import { startHTTPServer } from "mcp-proxy";
+import { startHTTPServer } from "@gazzadownunder/mcp-proxy";
 import { StrictEventEmitter } from "strict-event-emitter-types";
 import { setTimeout as delay } from "timers/promises";
 import { fetch } from "undici";
