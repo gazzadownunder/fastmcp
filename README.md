@@ -10,6 +10,8 @@ A TypeScript framework for building [MCP](https://glama.ai/mcp) servers capable 
 
 - Simple Tool, Resource, Prompt definition
 - [Authentication](#authentication)
+- [Tool Authorization](#tool-authorization) with scope challenge support
+- [Scope Challenge (Step-Up Authentication)](#scope-challenge-step-up-authentication)
 - [Passing headers through context](#passing-headers-through-context)
 - [Session ID and Request ID tracking](#session-id-and-request-id-tracking)
 - [Sessions](#sessions)
@@ -1310,6 +1312,61 @@ server.addTool({
 ```
 
 In this example, only clients authenticating with the `admin` role will be able to list or call the `admin-dashboard` tool. The `public-info` tool will be available to all authenticated users.
+
+#### Scope Challenge (Step-Up Authentication)
+
+FastMCP supports **scope challenge** functionality per the [MCP Specification (2025-11-25)](https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization#scope-challenge-handling), enabling step-up authentication when tools require additional OAuth scopes beyond what the user currently has.
+
+Instead of returning a boolean, `canAccess` can return an object specifying which scopes are required:
+
+```typescript
+import { CanAccessResult } from "fastmcp";
+
+const server = new FastMCP<{ scopes: string[] }>({
+  authenticate: async (request) => {
+    // Extract scopes from OAuth token
+    return { scopes: ["files:read"] };
+  },
+  name: "File Manager",
+  version: "1.0.0",
+});
+
+server.addTool({
+  name: "write_file",
+  description: "Write content to a file",
+  canAccess: (auth): boolean | CanAccessResult => {
+    // Check if user has the required scope
+    if (auth?.scopes?.includes("files:write")) {
+      return true;
+    }
+
+    // Return scope challenge information
+    return {
+      allowed: false,
+      requiredScopes: ["files:write"],
+      errorDescription: "Writing files requires the 'files:write' scope",
+    };
+  },
+  execute: async ({ path, content }) => {
+    // Execute only if canAccess passed
+    return `File written: ${path}`;
+  },
+});
+```
+
+When a tool returns a scope challenge:
+- The tool execution is blocked with an `InsufficientScopeError`
+- Error includes structured scope information for the client
+- Clients can use this to re-authenticate with additional scopes
+- Once mcp-proxy support is available, a 403 response with `WWW-Authenticate` header will be returned
+
+**Benefits:**
+- **Progressive Authorization**: Request additional permissions only when needed
+- **Better UX**: Users aren't asked for all permissions upfront
+- **Security**: Principle of least privilege - grant minimum scopes initially
+- **Standards Compliant**: Follows MCP specification and OAuth 2.0 patterns
+
+See [step-up.md](step-up.md) for complete implementation details.
 
 #### OAuth Proxy
 

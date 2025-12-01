@@ -264,6 +264,49 @@ abstract class FastMCPError extends Error {
   }
 }
 
+/**
+ * Error thrown when a tool requires additional OAuth scopes
+ * Used for scope challenge / step-up authentication per MCP spec (2025-11-25)
+ */
+export class InsufficientScopeError extends McpError {
+  public errorDescription?: string;
+  public requiredScopes: string[];
+  public toolName: string;
+
+  constructor(
+    toolName: string,
+    requiredScopes: string[],
+    errorDescription?: string,
+  ) {
+    const message =
+      errorDescription ||
+      `Insufficient scope for tool '${toolName}': requires scopes [${requiredScopes.join(", ")}]`;
+
+    super(ErrorCode.InvalidRequest, message);
+    this.name = "InsufficientScopeError";
+    this.toolName = toolName;
+    this.requiredScopes = requiredScopes;
+    this.errorDescription = errorDescription;
+  }
+
+  /**
+   * Convert to JSON-RPC error format with scope challenge data
+   * This format is designed to be detected by mcp-proxy for WWW-Authenticate header generation
+   */
+  toJSON() {
+    return {
+      code: -32001, // Custom error code for insufficient scope
+      data: {
+        error: "insufficient_scope",
+        errorDescription: this.errorDescription,
+        requiredScopes: this.requiredScopes,
+        toolName: this.toolName,
+      },
+      message: this.message,
+    };
+  }
+}
+
 export class UnexpectedStateError extends FastMCPError {
   public extras?: Extras;
 
@@ -875,7 +918,15 @@ type Tool<
      */
     streamingHint?: boolean;
   } & ToolAnnotations;
-  canAccess?: (auth: T) => boolean;
+  /**
+   * Access control function for the tool
+   * @param auth - Authentication context from the session
+   * @returns
+   * - `true` to allow access
+   * - `false` to deny access (tool will be hidden from lists)
+   * - `CanAccessResult` object to deny with scope challenge information
+   */
+  canAccess?: (auth: T) => boolean | CanAccessResult;
   description?: string;
 
   execute: (
@@ -942,6 +993,25 @@ export enum ServerState {
   Running = "running",
   Stopped = "stopped",
 }
+
+/**
+ * Result of a canAccess check with optional scope challenge information
+ */
+export type CanAccessResult = {
+  /**
+   * Whether access is allowed
+   */
+  allowed: boolean;
+  /**
+   * Human-readable description of why access was denied
+   */
+  errorDescription?: string;
+  /**
+   * Required OAuth scopes if access is denied
+   * Used for scope challenge (step-up authentication)
+   */
+  requiredScopes?: string[];
+};
 
 type Authenticate<T> = (request: http.IncomingMessage) => Promise<T>;
 
@@ -1761,6 +1831,37 @@ export class FastMCPSession<
           ErrorCode.MethodNotFound,
           `Unknown tool: ${request.params.name}`,
         );
+      }
+
+      // Runtime access check with scope challenge support
+      if (tool.canAccess && this.#auth) {
+        const accessResult = tool.canAccess(this.#auth);
+
+        // Handle both boolean and CanAccessResult returns (backward compatible)
+        const allowed =
+          typeof accessResult === "boolean"
+            ? accessResult
+            : accessResult.allowed;
+
+        if (!allowed) {
+          // Extract scope information if available
+          const requiredScopes =
+            typeof accessResult === "object" && accessResult.requiredScopes
+              ? accessResult.requiredScopes
+              : [];
+
+          const errorDescription =
+            typeof accessResult === "object" && accessResult.errorDescription
+              ? accessResult.errorDescription
+              : undefined;
+
+          // Throw scope challenge error
+          throw new InsufficientScopeError(
+            request.params.name,
+            requiredScopes,
+            errorDescription,
+          );
+        }
       }
 
       let args: unknown = undefined;
